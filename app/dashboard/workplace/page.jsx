@@ -1,0 +1,1164 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Plus, Send, Paperclip, Sparkles, Mic, X, Calendar, DollarSign, Users, Wrench, Brain, Bell, FileText, CheckCircle2, Clock, AlertCircle, Upload, Video, Image as ImageIcon, Code, FileArchive, File, History, Trash2, FolderOpen } from 'lucide-react';
+import Sidebar from '../../components/dashboard/Sidebar';
+import AIAssistant from '../../components/dashboard/AIAssistant';
+import { useKanban } from '../../context/KanbanContext';
+import { useProjects } from '../../context/ProjectContext';
+import { parseTasksFromAI } from '../../utils/taskParser';
+
+// Simple markdown-to-HTML formatter
+function formatMarkdown(text) {
+  let html = text;
+
+  // Escape HTML first to prevent XSS
+  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Headers (do these first, before line break conversion)
+  html = html.replace(/^### (.*?)$/gim, '<h3>$1</h3>');
+  html = html.replace(/^## (.*?)$/gim, '<h2>$1</h2>');
+  html = html.replace(/^# (.*?)$/gim, '<h1>$1</h1>');
+
+  // Bold (must be before italic to handle *** correctly)
+  html = html.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic
+  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+  // Code inline
+  html = html.replace(/`(.*?)`/g, '<code class="bg-white/10 px-1.5 py-0.5 rounded text-sm">$1</code>');
+
+  // Split into lines for list processing
+  const lines = html.split('\n');
+  const processed = [];
+  let inList = false;
+  let listItems = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Check if line is a list item
+    if (line.match(/^[•\-\*\+] /)) {
+      const content = line.replace(/^[•\-\*\+] /, '');
+      listItems.push(`<li>${content}</li>`);
+      inList = true;
+    } else {
+      // Not a list item, close any open list
+      if (inList && listItems.length > 0) {
+        processed.push(`<ul>${listItems.join('')}</ul>`);
+        listItems = [];
+        inList = false;
+      }
+      
+      // Add the current line
+      if (line) {
+        processed.push(line);
+      } else {
+        // Empty line adds spacing
+        processed.push('<br>');
+      }
+    }
+  }
+
+  // Close any remaining list
+  if (inList && listItems.length > 0) {
+    processed.push(`<ul>${listItems.join('')}</ul>`);
+  }
+
+  html = processed.join('\n');
+
+  // Convert double line breaks to paragraph breaks
+  html = html.replace(/<br>\n<br>/g, '</p><p>');
+  
+  // Wrap content in paragraphs if not a heading or list
+  const wrapped = html.split('\n').map(line => {
+    line = line.trim();
+    if (!line) return '';
+    if (line.startsWith('<h') || line.startsWith('<ul') || line.startsWith('</')) {
+      return line;
+    }
+    if (line === '<br>') return line;
+    return `<p>${line}</p>`;
+  }).join('\n');
+
+  // Clean up excessive breaks and empty paragraphs
+  let final = wrapped
+    .replace(/<p><br><\/p>/g, '<br>')
+    .replace(/<br>\s*<br>/g, '<br>')
+    .replace(/<p><\/p>/g, '')
+    .replace(/\n+/g, '\n')
+    .trim();
+
+  return final;
+}
+
+export default function WorkplacePage() {
+  const { addTasksFromAI } = useKanban();
+  const { 
+    projects, 
+    activeProjectId, 
+    setActiveProjectId, 
+    createProject, 
+    addMessageToProject, 
+    getActiveProject,
+    deleteProject 
+  } = useProjects();
+  
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [showProjectHistory, setShowProjectHistory] = useState(true);
+  const [messages, setMessages] = useState([]);
+
+  // Auto-close project history sidebar after 3 seconds
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowProjectHistory(false);
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, []);
+  const [inputValue, setInputValue] = useState('');
+  const [projectContext, setProjectContext] = useState(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [showAddProject, setShowAddProject] = useState(true);
+  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [showImportForm, setShowImportForm] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [currentProjectName, setCurrentProjectName] = useState('');
+
+  // Project Form State
+  const [formData, setFormData] = useState({
+    projectName: '',
+    projectType: 'Web Development',
+    projectDescription: '',
+    deadlineValue: '',
+    deadlineUnit: 'days',
+    clientName: '',
+    clientEmail: '',
+    paymentAmount: '',
+    paymentStatus: 'Pending',
+    priority: 'Medium',
+    milestones: '',
+    teamMembers: '',
+    projectStatus: 'Not Started',
+    toolsNeeded: '',
+    aiAssistance: '',
+    keywords: '',
+    notes: '',
+    reminderToggle: false,
+    estimatedHours: ''
+  });
+
+  // Import Form State
+  const [importData, setImportData] = useState({
+    projectName: '',
+    projectType: 'Web Development',
+    projectDescription: '',
+    deadlineValue: '',
+    deadlineUnit: 'days',
+    clientName: '',
+    clientEmail: '',
+    paymentAmount: '',
+    paymentStatus: 'Pending',
+    priority: 'Medium',
+    milestones: '',
+    projectStatus: 'Not Started'
+  });
+
+  const handleInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value
+    }));
+  };
+
+  const handleImportInputChange = (e) => {
+    const { name, value } = e.target;
+    setImportData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleFileUpload = (e) => {
+    const files = Array.from(e.target.files);
+    setUploadedFiles(prev => [...prev, ...files]);
+  };
+
+  const removeFile = (index) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const getFileIcon = (fileName) => {
+    const extension = fileName.split('.').pop().toLowerCase();
+    if (['mp4', 'avi', 'mov', 'mkv', 'wmv'].includes(extension)) return Video;
+    if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(extension)) return ImageIcon;
+    if (['js', 'jsx', 'ts', 'tsx', 'html', 'css', 'py', 'java', 'cpp'].includes(extension)) return Code;
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(extension)) return FileArchive;
+    return File;
+  };
+
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+  };
+
+  const handleFormSubmit = async (e) => {
+    e.preventDefault();
+    console.log('Project Created:', formData);
+    
+    // Store project name for later use
+    const projectName = formData.projectName || 'Untitled Project';
+    setCurrentProjectName(projectName);
+    
+    // Hide form quickly
+    setShowProjectForm(false);
+    setShowAddProject(false);
+
+    // Call server to summarize the project using AI
+    try {
+      setIsSummarizing(true);
+      const res = await fetch('/api/openrouter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'summarize', formData })
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        let friendly = text;
+        try {
+          const parsed = JSON.parse(text);
+          friendly = parsed?.error || parsed?.message || parsed?.details || JSON.stringify(parsed);
+        } catch (e) {}
+
+        if (typeof friendly === 'string' && friendly.includes('OPENROUTER_API_KEY')) {
+          friendly = 'OpenRouter API key is not configured on the server. Add OPENROUTER_API_KEY to your .env.local and restart the dev server.';
+        }
+
+        throw new Error(`Server error: ${res.status} - ${friendly}`);
+      }
+
+      const data = await res.json();
+      const reply = data?.reply || 'No summary returned.';
+
+      // Create project in context
+      const newProject = createProject(formData, reply);
+
+      // Append assistant reply to messages and save as project context
+      setMessages([{ text: reply, sender: 'ai' }]);
+      setProjectContext(reply);
+      
+      // Add message to project history
+      addMessageToProject(newProject.id, { text: reply, sender: 'ai' });
+
+      // Parse tasks from AI response and add to Kanban
+      const parsedTasks = parseTasksFromAI(reply, projectName);
+      if (parsedTasks.length > 0) {
+        const addedCount = addTasksFromAI(newProject.id, projectName, parsedTasks);
+        console.log(`✅ Added ${addedCount} tasks to Kanban board`);
+        
+        // Show success notification in chat
+        setTimeout(() => {
+          const successMsg = { 
+            text: `✅ Successfully added ${addedCount} task${addedCount > 1 ? 's' : ''} to your Kanban board! You can now view and manage them in the Kanban section.`, 
+            sender: 'ai' 
+          };
+          setMessages(prev => [...prev, successMsg]);
+          addMessageToProject(newProject.id, successMsg);
+        }, 1000);
+      }
+    } catch (err) {
+      console.error('Summarize error:', err);
+      const errorMsg = { text: `Error summarizing project: ${err.message}`, sender: 'ai' };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsSummarizing(false);
+    }
+
+    // Reset form
+    setFormData({
+      projectName: '',
+      projectType: 'Web Development',
+      projectDescription: '',
+      deadlineValue: '',
+      deadlineUnit: 'days',
+      clientName: '',
+      clientEmail: '',
+      paymentAmount: '',
+      paymentStatus: 'Pending',
+      priority: 'Medium',
+      milestones: '',
+      teamMembers: '',
+      projectStatus: 'Not Started',
+      toolsNeeded: '',
+      aiAssistance: '',
+      keywords: '',
+      notes: '',
+      reminderToggle: false,
+      estimatedHours: ''
+    });
+  };
+
+  const handleImportSubmit = (e) => {
+    e.preventDefault();
+    console.log('Project Imported:', { ...importData, files: uploadedFiles });
+    setShowImportForm(false);
+    setShowAddProject(false);
+    // Reset form
+    setImportData({
+      projectName: '',
+      projectType: 'Web Development',
+      projectDescription: '',
+      deadlineValue: '',
+      deadlineUnit: 'days',
+      clientName: '',
+      clientEmail: '',
+      paymentAmount: '',
+      paymentStatus: 'Pending',
+      priority: 'Medium',
+      milestones: '',
+      projectStatus: 'Not Started'
+    });
+    setUploadedFiles([]);
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    const text = inputValue.trim();
+    if (!text) return;
+
+    // Optimistically add user message
+    setMessages(prev => [...prev, { text, sender: 'user' }]);
+    setInputValue('');
+    setShowAddProject(false);
+
+    // Reset textarea height
+    const textarea = document.querySelector('textarea');
+    if (textarea) textarea.style.height = 'auto';
+
+    // If we have a projectContext, send a constrained chat request to the server
+    try {
+      setIsSending(true);
+      const payload = {
+        type: 'chat',
+        projectContext: projectContext || '',
+        userMessages: [{ role: 'user', content: text }]
+      };
+
+      const res = await fetch('/api/openrouter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const t = await res.text();
+        let friendly = t;
+        try {
+          const parsed = JSON.parse(t);
+          friendly = parsed?.error || parsed?.message || parsed?.details || JSON.stringify(parsed);
+        } catch (e) {}
+
+        if (typeof friendly === 'string' && friendly.includes('OPENROUTER_API_KEY')) {
+          friendly = 'OpenRouter API key is not configured on the server.';
+        }
+
+        throw new Error(`Server error: ${res.status} - ${friendly}`);
+      }
+
+      const data = await res.json();
+      const reply = data?.reply || "I couldn't generate a response.";
+      
+      const aiMsg = { text: reply, sender: 'ai' };
+      setMessages(prev => [...prev, aiMsg]);
+      
+      // Save to project history if active project
+      if (activeProjectId) {
+        addMessageToProject(activeProjectId, { text, sender: 'user' });
+        addMessageToProject(activeProjectId, aiMsg);
+      }
+    } catch (err) {
+      console.error('Chat error:', err);
+      setMessages(prev => [...prev, { text: `Error: ${err.message}`, sender: 'ai' }]);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0f0f23] dark:bg-[#0f0f23] light:bg-gray-50 text-white dark:text-white light:text-gray-900 transition-colors duration-300">
+      {/* Sidebar */}
+      <Sidebar onToggle={setIsCollapsed} />
+
+      {/* Main Workplace Content */}
+      <div 
+        className="transition-all duration-300 ease-in-out min-h-screen flex flex-col"
+        style={{ 
+          marginLeft: isCollapsed ? '80px' : '256px',
+          marginRight: showProjectHistory ? '380px' : '0'
+        }}
+      >
+        {/* Workplace Header */}
+        <div className="p-8 pb-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">Workplace</h1>
+            <p className="text-gray-400">Collaborate with AI to manage your projects</p>
+          </div>
+          
+          {/* Toggle Project History */}
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowProjectHistory(!showProjectHistory)}
+            className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+          >
+            <History className="w-4 h-4" />
+            {showProjectHistory ? 'Hide' : 'Show'} Projects
+          </motion.button>
+        </div>
+
+        {/* Chat Messages Area */}
+        <div className="flex-1 px-8 pb-4 overflow-y-auto">
+          {showAddProject && messages.length === 0 ? (
+            /* Add Project Center Card */
+            <div className="flex items-center justify-center h-full">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.3 }}
+                className="text-center"
+              >
+                <div className="mb-8">
+                  <motion.div
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    className="w-20 h-20 bg-linear-to-br from-indigo-600 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-6"
+                  >
+                    <Sparkles className="w-10 h-10 text-white" />
+                  </motion.div>
+                </div>
+                
+                <h2 className="text-2xl font-bold mb-2">Welcome to Your Workplace</h2>
+                <p className="text-gray-400 mb-6 max-w-md mx-auto">
+                  Start by creating a new project or ask the AI assistant below for help
+                </p>
+
+                {/* Quick Actions */}
+                <div className="flex gap-4 justify-center">
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowProjectForm(true)}
+                    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-medium transition-colors"
+                  >
+                    New Project
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowImportForm(true)}
+                    className="px-6 py-3 bg-white/5 hover:bg-white/10 rounded-lg font-medium transition-colors border border-white/10"
+                  >
+                    Import Project
+                  </motion.button>
+                </div>
+              </motion.div>
+            </div>
+          ) : (
+            /* Messages Display */
+            <div className="max-w-4xl mx-auto space-y-4 py-4">
+              <AnimatePresence>
+                {messages.map((message, index) => (
+                  <motion.div
+                    key={index}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-2xl px-6 py-4 rounded-2xl ${
+                        message.sender === 'user'
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-[#1a1a35] text-gray-100 border border-white/5'
+                      }`}
+                    >
+                      {message.sender === 'ai' && (
+                        <div className="flex items-center gap-2 mb-3">
+                          <Sparkles className="w-4 h-4 text-indigo-400" />
+                          <span className="text-xs font-medium text-indigo-400">AI Assistant</span>
+                        </div>
+                      )}
+                      <div 
+                        className={`ai-message-content ${message.sender === 'user' ? 'text-white' : 'text-gray-200'}`}
+                        style={{ lineHeight: '1.7', fontSize: '0.95rem' }}
+                        dangerouslySetInnerHTML={{ 
+                          __html: message.sender === 'ai' 
+                            ? formatMarkdown(message.text) 
+                            : `<p>${message.text}</p>` 
+                        }}
+                      />
+                    </div>
+                  </motion.div>
+                ))}
+
+                {/* Loading Spinner for Summarization */}
+                {isSummarizing && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="flex justify-start"
+                  >
+                    <div className="max-w-2xl px-6 py-4 rounded-2xl bg-[#1a1a35] text-gray-100 border border-white/5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Sparkles className="w-4 h-4 text-indigo-400 animate-pulse" />
+                        <span className="text-xs font-medium text-indigo-400">AI Assistant</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="relative w-5 h-5">
+                          <div className="absolute inset-0 border-2 border-indigo-600/30 rounded-full"></div>
+                          <div className="absolute inset-0 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                        </div>
+                        <span className="text-gray-400 text-sm">Generating project summary...</span>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Loading Spinner for Chat */}
+                {isSending && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="flex justify-start"
+                  >
+                    <div className="max-w-2xl px-6 py-4 rounded-2xl bg-[#1a1a35] text-gray-100 border border-white/5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Sparkles className="w-4 h-4 text-indigo-400 animate-pulse" />
+                        <span className="text-xs font-medium text-indigo-400">AI Assistant</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="relative w-5 h-5">
+                          <div className="absolute inset-0 border-2 border-indigo-600/30 rounded-full"></div>
+                          <div className="absolute inset-0 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                        </div>
+                        <span className="text-gray-400 text-sm">Thinking...</span>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+        </div>
+
+        {/* AI Chatbar - Bottom Center */}
+        <div className="sticky bottom-0 p-6 bg-linear-to-t from-[#0f0f23] via-[#0f0f23] to-transparent">
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+            className="max-w-4xl mx-auto"
+          >
+            <form onSubmit={handleSendMessage}>
+              <div className="relative bg-[#1a1a35] rounded-2xl border border-white/10 shadow-2xl">
+                <div className="flex items-center gap-3 p-4">
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    className="p-2.5 hover:bg-white/5 rounded-lg transition-colors shrink-0"
+                  >
+                    <Paperclip className="w-5 h-5 text-gray-400" />
+                  </motion.button>
+
+                  <textarea
+                    value={inputValue}
+                    onChange={(e) => {
+                      setInputValue(e.target.value);
+                      e.target.style.height = 'auto';
+                      e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage(e);
+                      }
+                    }}
+                    placeholder="Ask AI anything about your projects..."
+                    className="flex-1 bg-transparent text-white placeholder-gray-500 outline-none resize-none overflow-y-auto"
+                    style={{ minHeight: '24px', maxHeight: '200px' }}
+                  />
+
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    className="p-2.5 hover:bg-white/5 rounded-lg transition-colors shrink-0"
+                  >
+                    <Mic className="w-5 h-5 text-gray-400" />
+                  </motion.button>
+
+                  <motion.button
+                    type="submit"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    disabled={!inputValue.trim()}
+                    className="p-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
+                  >
+                    <Send className="w-5 h-5" />
+                  </motion.button>
+                </div>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* New Project Modal */}
+      <AnimatePresence>
+        {showProjectForm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowProjectForm(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#1a1a35] rounded-2xl border border-white/10 max-w-5xl w-full max-h-[85vh] overflow-y-auto shadow-2xl"
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between p-6 border-b border-white/10 sticky top-0 bg-[#1a1a35] z-10">
+                <div>
+                  <h2 className="text-2xl font-bold flex items-center gap-2">
+                    <FileText className="w-6 h-6 text-indigo-400" />
+                    New Project
+                  </h2>
+                  <p className="text-gray-400 text-sm mt-1">Fill in the details to create your project</p>
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => setShowProjectForm(false)}
+                  className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </motion.button>
+              </div>
+
+              {/* Form Content */}
+              <form onSubmit={handleFormSubmit} className="p-6 space-y-6">
+                {/* Basic Info Section */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-indigo-400 flex items-center gap-2">
+                    <FileText className="w-5 h-5" />
+                    Basic Information
+                  </h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-2">
+                        Project Name <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        name="projectName"
+                        value={formData.projectName}
+                        onChange={handleInputChange}
+                        required
+                        placeholder="Enter project name"
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-2">
+                        Project Type <span className="text-red-400">*</span>
+                      </label>
+                      <select
+                        name="projectType"
+                        value={formData.projectType}
+                        onChange={handleInputChange}
+                        required
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="Web Development">Web Development</option>
+                        <option value="Video Editing">Video Editing</option>
+                        <option value="Graphic Design">Graphic Design</option>
+                        <option value="UI/UX Design">UI/UX Design</option>
+                        <option value="Mobile App">Mobile App</option>
+                        <option value="Content Writing">Content Writing</option>
+                        <option value="Marketing">Marketing</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Project Description</label>
+                    <textarea
+                      name="projectDescription"
+                      value={formData.projectDescription}
+                      onChange={handleInputChange}
+                      placeholder="Describe your project..."
+                      rows="4"
+                      className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                      <Clock className="w-4 h-4" />
+                      Project Duration
+                    </label>
+                    <div className="flex gap-3">
+                      <input
+                        type="number"
+                        name="deadlineValue"
+                        value={formData.deadlineValue}
+                        onChange={handleInputChange}
+                        placeholder="Enter duration"
+                        min="1"
+                        className="flex-1 px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <select
+                        name="deadlineUnit"
+                        value={formData.deadlineUnit}
+                        onChange={handleInputChange}
+                        className="w-32 px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="days">Days</option>
+                        <option value="weeks">Weeks</option>
+                        <option value="months">Months</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Client Information */}
+                <div className="space-y-4 pt-4 border-t border-white/10">
+                  <h3 className="text-lg font-semibold text-indigo-400 flex items-center gap-2">
+                    <Users className="w-5 h-5" />
+                    Client Information
+                  </h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Client Name / Company</label>
+                      <input
+                        type="text"
+                        name="clientName"
+                        value={formData.clientName}
+                        onChange={handleInputChange}
+                        placeholder="Enter client name"
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Client Email</label>
+                      <input
+                        type="email"
+                        name="clientEmail"
+                        value={formData.clientEmail}
+                        onChange={handleInputChange}
+                        placeholder="client@example.com"
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                        <DollarSign className="w-4 h-4" />
+                        Payment Amount
+                      </label>
+                      <input
+                        type="number"
+                        name="paymentAmount"
+                        value={formData.paymentAmount}
+                        onChange={handleInputChange}
+                        placeholder="0.00"
+                        step="0.01"
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Payment Status</label>
+                      <select
+                        name="paymentStatus"
+                        value={formData.paymentStatus}
+                        onChange={handleInputChange}
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="Pending">Pending</option>
+                        <option value="Partial">Partial</option>
+                        <option value="Completed">Completed</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Task & Workflow */}
+                <div className="space-y-4 pt-4 border-t border-white/10">
+                  <h3 className="text-lg font-semibold text-indigo-400 flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5" />
+                    Task & Workflow
+                  </h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                        <AlertCircle className="w-4 h-4" />
+                        Priority
+                      </label>
+                      <select
+                        name="priority"
+                        value={formData.priority}
+                        onChange={handleInputChange}
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="High">🔴 High</option>
+                        <option value="Medium">🟡 Medium</option>
+                        <option value="Low">🟢 Low</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Status</label>
+                      <select
+                        name="projectStatus"
+                        value={formData.projectStatus}
+                        onChange={handleInputChange}
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="Not Started">Not Started</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Review">Review</option>
+                        <option value="Completed">Completed</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Milestones / Deliverables</label>
+                    <textarea
+                      name="milestones"
+                      value={formData.milestones}
+                      onChange={handleInputChange}
+                      placeholder="e.g., UI Design, Backend API, Testing"
+                      rows="3"
+                      className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Team Members</label>
+                    <input
+                      type="text"
+                      name="teamMembers"
+                      value={formData.teamMembers}
+                      onChange={handleInputChange}
+                      placeholder="Enter names (comma separated)"
+                      className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                {/* AI & Automation */}
+                <div className="space-y-4 pt-4 border-t border-white/10">
+                  <h3 className="text-lg font-semibold text-indigo-400 flex items-center gap-2">
+                    <Brain className="w-5 h-5" />
+                    AI & Automation
+                  </h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                        <Wrench className="w-4 h-4" />
+                        Tools Needed
+                      </label>
+                      <input
+                        type="text"
+                        name="toolsNeeded"
+                        value={formData.toolsNeeded}
+                        onChange={handleInputChange}
+                        placeholder="e.g., Figma, VS Code"
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                        <Clock className="w-4 h-4" />
+                        Estimated Hours
+                      </label>
+                      <input
+                        type="number"
+                        name="estimatedHours"
+                        value={formData.estimatedHours}
+                        onChange={handleInputChange}
+                        placeholder="0"
+                        min="0"
+                        className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">AI Assistance Required</label>
+                    <input
+                      type="text"
+                      name="aiAssistance"
+                      value={formData.aiAssistance}
+                      onChange={handleInputChange}
+                      placeholder="e.g., Write emails, generate copy"
+                      className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Keywords / Focus Area</label>
+                    <input
+                      type="text"
+                      name="keywords"
+                      value={formData.keywords}
+                      onChange={handleInputChange}
+                      placeholder="e.g., E-commerce, Mobile-first"
+                      className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Optional Extras */}
+                <div className="space-y-4 pt-4 border-t border-white/10">
+                  <h3 className="text-lg font-semibold text-indigo-400 flex items-center gap-2">
+                    <Sparkles className="w-5 h-5" />
+                    Optional Extras
+                  </h3>
+                  
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Notes / Comments</label>
+                    <textarea
+                      name="notes"
+                      value={formData.notes}
+                      onChange={handleInputChange}
+                      placeholder="Add any additional notes..."
+                      rows="4"
+                      className="w-full px-4 py-3 bg-[#0f0f23] border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      id="reminderToggle"
+                      name="reminderToggle"
+                      checked={formData.reminderToggle}
+                      onChange={handleInputChange}
+                      className="w-5 h-5 rounded bg-[#0f0f23] border-white/10 text-indigo-600 focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <label htmlFor="reminderToggle" className="text-sm font-medium flex items-center gap-2 cursor-pointer">
+                      <Bell className="w-4 h-4" />
+                      Enable AI Reminders & Notifications
+                    </label>
+                  </div>
+                </div>
+
+                {/* Form Actions */}
+                <div className="flex gap-4 justify-end pt-6 border-t border-white/10">
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setShowProjectForm(false)}
+                    className="px-6 py-3 bg-white/5 hover:bg-white/10 rounded-lg font-medium transition-colors border border-white/10"
+                  >
+                    Cancel
+                  </motion.button>
+                  <motion.button
+                    type="submit"
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-medium transition-colors"
+                  >
+                    Create Project
+                  </motion.button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Import Project Modal (Placeholder for now) */}
+      <AnimatePresence>
+        {showImportForm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowImportForm(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#1a1a35] rounded-2xl border border-white/10 max-w-2xl w-full p-8 shadow-2xl"
+            >
+              <div className="text-center">
+                <Upload className="w-16 h-16 mx-auto mb-4 text-indigo-400" />
+                <h2 className="text-2xl font-bold mb-2">Import Project</h2>
+                <p className="text-gray-400 mb-6">
+                  This feature is coming soon. Use "New Project" to create a project from scratch.
+                </p>
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setShowImportForm(false)}
+                  className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-medium transition-colors"
+                >
+                  Got it
+                </motion.button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* AI Assistant Widget */}
+      <AIAssistant />
+
+      {/* Project History Sidebar */}
+      <AnimatePresence>
+        {showProjectHistory && (
+          <motion.div
+            initial={{ x: 380 }}
+            animate={{ x: 0 }}
+            exit={{ x: 380 }}
+            transition={{ duration: 0.3 }}
+            className="fixed right-0 top-0 h-screen w-[380px] bg-[#1a1a35] border-l border-white/10 z-40 overflow-y-auto"
+          >
+            <div className="sticky top-0 bg-[#1a1a35] border-b border-white/10 p-4 z-10">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <FolderOpen className="w-5 h-5 text-indigo-400" />
+                  Saved Projects
+                </h2>
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => setShowProjectHistory(false)}
+                  className="p-1.5 hover:bg-white/5 rounded-lg transition"
+                >
+                  <X className="w-4 h-4" />
+                </motion.button>
+              </div>
+              <p className="text-xs text-gray-400">{projects.length} project{projects.length !== 1 ? 's' : ''} saved</p>
+            </div>
+
+            <div className="p-4 space-y-3">
+              {projects.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">No projects yet</p>
+                  <p className="text-xs mt-1">Create your first project</p>
+                </div>
+              ) : (
+                projects.map(project => (
+                  <motion.div
+                    key={project.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    whileHover={{ scale: 1.02 }}
+                    onClick={() => {
+                      setActiveProjectId(project.id);
+                      setMessages(project.messages || []);
+                      setProjectContext(project.aiSummary);
+                      setShowAddProject(false);
+                    }}
+                    className={`p-4 rounded-xl border cursor-pointer transition-all ${
+                      activeProjectId === project.id
+                        ? 'bg-indigo-600/20 border-indigo-500 shadow-lg'
+                        : 'bg-[#0f0f23] border-white/10 hover:border-indigo-500/50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold truncate">{project.name}</h3>
+                        <p className="text-xs text-gray-400 mt-1">{project.type}</p>
+                      </div>
+                      <motion.button
+                        whileHover={{ scale: 1.1 }}
+                        whileTap={{ scale: 0.9 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete project "${project.name}"?`)) {
+                            deleteProject(project.id);
+                          }
+                        }}
+                        className="p-1.5 hover:bg-red-500/20 rounded-lg transition ml-2"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-400" />
+                      </motion.button>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-gray-400 mb-2">
+                      {project.duration?.value && (
+                        <>
+                          <Clock className="w-3 h-3" />
+                          <span>{project.duration.value} {project.duration.unit}</span>
+                        </>
+                      )}
+                      {project.priority && (
+                        <>
+                          <span>•</span>
+                          <span className={
+                            project.priority === 'High' ? 'text-red-400' :
+                            project.priority === 'Medium' ? 'text-yellow-400' :
+                            'text-green-400'
+                          }>
+                            {project.priority}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {project.description && (
+                      <p className="text-xs text-gray-500 line-clamp-2 mb-2">
+                        {project.description}
+                      </p>
+                    )}
+
+                    <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-white/5">
+                      <span>{new Date(project.createdAt).toLocaleDateString()}</span>
+                      <span>{project.messages?.length || 0} messages</span>
+                    </div>
+                  </motion.div>
+                ))
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
