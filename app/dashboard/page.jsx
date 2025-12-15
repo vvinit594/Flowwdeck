@@ -110,7 +110,7 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-[#0f0f23] text-white">
       {/* Sidebar */}
-      <Sidebar onToggle={setIsCollapsed} />
+      <Sidebar onToggle={setIsCollapsed} onChatClick={() => setShowChatModal(true)} />
 
       {/* Main Content */}
       <div 
@@ -141,20 +141,6 @@ export default function DashboardPage() {
 
       {/* AI Assistant Widget */}
       <AIAssistant />
-
-      {/* Smart Chat Button - Fixed position */}
-      <motion.button
-        onClick={() => setShowChatModal(true)}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        className="fixed bottom-8 right-8 z-40 p-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-full shadow-lg hover:shadow-purple-500/50 transition-all group"
-        title="Smart Chat"
-      >
-        <MessageCircle size={24} className="text-white" />
-        <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-xs font-bold">
-          3
-        </span>
-      </motion.button>
 
       {/* Chat Modal */}
       <ChatModal 

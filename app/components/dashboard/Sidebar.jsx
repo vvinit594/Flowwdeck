@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import ThemeToggle from '../ThemeToggle';
 
-export default function Sidebar({ onToggle }) {
+export default function Sidebar({ onToggle, onChatClick }) {
   const pathname = usePathname();
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -84,10 +84,10 @@ export default function Sidebar({ onToggle }) {
         {menuItems.map((item, index) => {
           const Icon = item.icon;
           const isActive = pathname === item.path;
+          const isSmartChat = item.label === 'Smart Chat';
 
-          return (
-            <Link key={item.path} href={item.path}>
-              <motion.div
+          const content = (
+            <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 whileHover={{ x: isCollapsed ? 0 : 4 }}
@@ -127,6 +127,15 @@ export default function Sidebar({ onToggle }) {
                   </motion.div>
                 )}
               </motion.div>
+          );
+
+          return isSmartChat ? (
+            <div key={item.path} onClick={onChatClick}>
+              {content}
+            </div>
+          ) : (
+            <Link key={item.path} href={item.path}>
+              {content}
             </Link>
           );
         })}
